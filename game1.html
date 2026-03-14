@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Zodiac Star - 6.3 精致 UI 版</title>
+    <style>
+        body { 
+            margin: 0; overflow: hidden; background-color: #000; 
+            background-image: url('./background_star.jpg'); 
+            background-size: cover; background-position: center;
+            font-family: 'Segoe UI', sans-serif; color: white; 
+        }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* 独立感应光圈 */
+        #game-cursor {
+            position: fixed; width: 22px; height: 22px; border: 2px solid #00f2ff; border-radius: 50%;
+            background: rgba(0, 242, 254, 0.3); pointer-events: none; z-index: 7000;
+            transform: translate(-50%, -50%); box-shadow: 0 0 15px #00f2ff; display: none;
+        }
+
+        .glass { background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; }
+        
+        /* --- 修改：放大 1.25 倍的 UI 面板 --- */
+        #ui-layer { 
+            position:absolute; inset:0; pointer-events:none; z-index:10; display:none; 
+            opacity: 0; transition: opacity 0.8s ease;
+        }
+        .stats-panel {
+            position: absolute; top: 30px; left: 30px; display: flex; gap: 15px;
+            transform: scale(1.25); transform-origin: top left;
+        }
+        #history-panel { 
+            position: absolute; left: 30px; top: 160px; width: 180px; padding: 12px; z-index: 100; 
+            display: none; transform: scale(1.25); transform-origin: top left;
+            opacity: 0; transition: all 0.5s ease;
+        }
+
+        /* --- 修改：纯白标题 --- */
+        .star-title {
+            color: #ffffff;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+            letter-spacing: 12px; font-weight: bold;
+        }
+
+        .history-item { margin-bottom: 5px; font-size: 0.65em; display: flex; justify-content: space-between; align-items: center; }
+        .rarity-tag { padding: 1px 4px; border-radius: 3px; font-weight: bold; color: #000; }
+
+        /* 卡牌说明 UI */
+        #card-info-box {
+            position: fixed; bottom: 15%; left: 50%; transform: translateX(-50%) translateY(30px);
+            padding: 22px 55px; text-align: center; width: 500px;
+            opacity: 0; transition: all 0.6s cubic-bezier(0.22, 1, 0.36, 1); z-index: 100;
+            color: #ffffff;
+        }
+        #card-info-box.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        #info-name { font-size: 2.0em; font-weight: bold; letter-spacing: 5px; margin-bottom: 10px; }
+        #info-desc { font-size: 1.0em; line-height: 1.6; opacity: 0.95; font-weight: 300; }
+
+        /* 结算界面与排行榜 */
+        #summary-screen { 
+            position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 6000; 
+            display: none; flex-direction: column; align-items: center; justify-content: center; 
+            backdrop-filter: blur(15px); opacity: 0; transition: opacity 1s ease;
+        }
+        #leaderboard { margin-top: 25px; width: 380px; padding: 12px; border-top: 1px solid rgba(255,255,255,0.1); text-align: center; }
+        .rank-item { display: flex; justify-content: space-between; padding: 4px 18px; font-size: 0.85em; opacity: 0.8; }
+        .rank-highlight { color: #ffd700; font-weight: bold; }
+
+        .btn-box { position: relative; width: 210px; height: 50px; border: 1px solid rgba(255,255,255,0.3); border-radius: 25px; overflow: hidden; }
+        .btn-progress { position: absolute; bottom: 0; left: 0; height: 100%; background: rgba(0, 242, 254, 0.4); width: 0%; transition: width 0.1s; }
+        .btn { width: 100%; height: 100%; border: none; background: rgba(255,255,255,0.05); color: #fff; letter-spacing: 4px; font-weight: bold; }
+
+        #welcome-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 4000; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.8s; }
+        #video-preview { position: fixed; bottom: 25px; left: 25px; width: 100px; height: 75px; border-radius: 8px; transform: scaleX(-1); opacity: 0.1; }
+    </style>
+</head>
+<body onload="initSceneOnly()">
+
+<div id="game-cursor"></div>
+
+<div id="welcome-modal">
+    <h1 class="star-title" style="font-size: 3.2em; margin-bottom: 5px;">STARDUST</h1>
+    <p style="color:#00f2ff; margin-bottom:40px; letter-spacing: 3px;">🖐️ 悬停 2秒 开启观测</p>
+    <div class="btn-box" id="start-btn-box"><div class="btn-progress" id="btn-p"></div><button class="btn">进入星域</button></div>
+</div>
+
+<div id="summary-screen">
+    <h2 class="star-title" style="font-size: 2.0em; letter-spacing: 8px; margin-bottom: 5px;">RESONANCE COMPLETE</h2>
+    <div id="summary-list" style="display:flex; gap:20px; margin: 30px 0;"></div>
+    <div id="final-score" style="font-size: 1.8em; font-weight: bold; color:#ffd700; margin-bottom: 18px;">SCORE: 0</div>
+    <div id="leaderboard" class="glass">
+        <div style="font-size: 0.65em; color: #888; margin-bottom: 8px; letter-spacing: 2px;">TOP OBSERVATIONS</div>
+        <div id="rank-list"></div>
+    </div>
+    <div class="btn-box" id="retry-btn-box" style="margin-top: 25px;"><div class="btn-progress" id="retry-p"></div><button class="btn">重新观测</button></div>
+</div>
+
+<div id="ui-layer">
+    <div class="stats-panel glass">
+        <div style="padding:8px 15px; border-right: 1px solid rgba(255,255,255,0.1);"><div style="font-size:0.5em; color:#00f2ff;">ROUND</div><div id="round-count" style="font-size:1.1em; font-weight:bold;">0 / 3</div></div>
+        <div style="padding:8px 15px;"><div style="font-size:0.5em; color:#ffd700;">SCORE</div><div id="score-val" style="font-size:1.1em; font-weight:bold;">0</div></div>
+    </div>
+    <div id="history-panel" class="glass">
+        <div style="font-size: 0.55em; color: #888; margin-bottom: 8px;">抽卡记录</div>
+        <div id="log-list"></div>
+    </div>
+</div>
+
+<div id="card-info-box" class="glass">
+    <div id="info-rarity" style="font-size: 0.85em; margin-bottom: 8px; font-weight: bold; letter-spacing: 2px;"></div>
+    <div id="info-name"></div>
+    <div id="info-desc"></div>
+</div>
+
+<video id="video-preview" autoplay playsinline></video>
+<div id="canvas-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.145.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three-stdlib@2.28.9/dist/three-stdlib.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@18.6.4/dist/tween.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const ZODIACS = ["白羊座", "金牛座", "双子座", "巨蟹座", "狮子座", "处女座", "天秤座", "天蝎座", "射手座", "摩羯座", "水瓶座", "双鱼座"];
+const ZODIAC_DESC = {
+    "白羊座": "热情果敢的开拓者，象征着生命力的爆发与纯粹的勇气。",
+    "金牛座": "稳重可靠的守护者，沉稳如大地，追求永恒的美与丰盈。",
+    "双子座": "灵动变幻的星之子，在思索与交流中穿梭，拥抱无限可能。",
+    "巨蟹座": "温柔细腻的月之守护，敏感的内心藏着最深沉的情感羁绊。",
+    "狮子座": "光芒万丈的星域领主，天生的领导者，内心充满骄傲与热忱。",
+    "处女座": "追求极致的完美主义，在秩序与细节中探寻星辰的真理。",
+    "天秤座": "优雅和谐的平衡者，在纷繁星盘中寻求极致的公正与美感。",
+    "天蝎座": "深邃莫测的暗夜之火，拥有洞察灵魂的锐利与重生的力量。",
+    "射手座": "自由奔放的星际旅人，追逐真理的箭簇永远指向未知的远方。",
+    "摩羯座": "坚韧不拔的攀登者，在永恒的时间流转中铸就坚实的基石。",
+    "水瓶座": "超凡脱俗的革新者，打破常规，思绪驰骋在未来的平行时空。",
+    "双鱼座": "梦幻空灵的灵魂诗人，在星光编织的梦境中感悟万物共鸣。"
+};
+const RARITY_MAP = { 
+    NORMAL: { label: '普通', color: '#00f2ff', threeColor: 0x00f2ff, score: 5 }, 
+    RARE: { label: '稀有', color: '#bc13fe', threeColor: 0xbc13fe, score: 10 }, 
+    HIDDEN: { label: '隐藏', color: '#ffd700', threeColor: 0xffd700, score: 20 } 
+};
+
+let scene, camera, renderer, starGroups = [];
+let scrollOffset = 0, targetScroll = 0, currentIndex = 0;
+let isFocused = false, isOpening = false, lock = true, appStarted = false, summaryMode = false;
+let currentCard = null, currentRound = 0, totalScore = 0, drawHistory = [];
+let lastHandX = null, lastHandY = null, hoverStartTime = null;
+
+function initSceneOnly() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(65, window.innerWidth/window.innerHeight, 0.1, 3000);
+    camera.position.set(0, 1, 12);
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+    dl.position.set(5, 5, 10); scene.add(dl);
+    animate();
+    initGesture();
+}
+
+function createBurst(pos, color) {
+    const count = 400;
+    const geo = new THREE.BufferGeometry();
+    const posArr = new Float32Array(count * 3);
+    const velArr = new Float32Array(count * 3);
+    for(let i=0; i<count; i++) {
+        posArr[i*3]=pos.x; posArr[i*3+1]=pos.y; posArr[i*3+2]=pos.z;
+        const theta=Math.random()*Math.PI*2, phi=Math.acos(Math.random()*2-1), s=0.08+Math.random()*0.35;
+        velArr[i*3]=Math.sin(phi)*Math.cos(theta)*s; velArr[i*3+1]=Math.sin(phi)*Math.sin(theta)*s; velArr[i*3+2]=Math.cos(phi)*s;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    const mat = new THREE.PointsMaterial({ size: 0.08, color: color, transparent: true, blending: THREE.AdditiveBlending });
+    const p = new THREE.Points(geo, mat); scene.add(p);
+    new TWEEN.Tween({o:1}).to({o:0}, 1500).onUpdate(obj => {
+        const arr = geo.attributes.position.array;
+        for(let i=0; i<count; i++){ arr[i*3]+=velArr[i*3]; arr[i*3+1]+=velArr[i*3+1]; arr[i*3+2]+=velArr[i*3+2]; }
+        geo.attributes.position.needsUpdate=true; mat.opacity=obj.o;
+    }).onComplete(()=>scene.remove(p)).start();
+}
+
+function initGesture() {
+    const cursor = document.getElementById('game-cursor');
+    const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+    
+    hands.onResults(res => {
+        if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+            const lm = res.multiHandLandmarks[0];
+            const handRoot = lm[9];
+            const screenX = (1 - handRoot.x) * window.innerWidth;
+            const screenY = handRoot.y * window.innerHeight;
+            cursor.style.display = 'block';
+            cursor.style.left = screenX + 'px'; cursor.style.top = screenY + 'px';
+
+            document.body.style.backgroundPosition = `${50 + (handRoot.x - 0.5) * 5}% ${50 + (handRoot.y - 0.5) * 5}%`;
+
+            const checkBtn = (btnId, progressId, callback) => {
+                const target = document.getElementById(btnId);
+                if(!target) return false;
+                const rect = target.getBoundingClientRect();
+                if(screenX > rect.left && screenX < rect.right && screenY > rect.top && screenY < rect.bottom) {
+                    if(!hoverStartTime) hoverStartTime = Date.now();
+                    const elapsed = Date.now() - hoverStartTime;
+                    document.getElementById(progressId).style.width = Math.min(100, (elapsed/2000)*100) + "%";
+                    if(elapsed >= 2000) callback();
+                } else {
+                    document.getElementById(progressId).style.width = "0%";
+                    return false;
+                }
+                return true;
+            };
+
+            if(!appStarted) {
+                if(!checkBtn('start-btn-box', 'btn-p', startApp)) hoverStartTime = null;
+            } else if(summaryMode) {
+                if(!checkBtn('retry-btn-box', 'retry-p', () => location.reload())) hoverStartTime = null;
+            } else {
+                if (currentCard && !isOpening) {
+                    if (lastHandX !== null) {
+                        currentCard.rotation.y += (handRoot.x - lastHandX) * 6;
+                        currentCard.rotation.x += (handRoot.y - lastHandY) * 6;
+                    }
+                    lastHandX = handRoot.x; lastHandY = handRoot.y;
+                } else if(!isFocused && !lock) {
+                    targetScroll = (1 - handRoot.x) * (ZODIACS.length - 1);
+                }
+                const dist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                if (dist < 0.08 && !lock && !isOpening) {
+                    handleAction(); lock = true;
+                    setTimeout(() => { lock = false; }, 2000);
+                }
+            }
+        } else {
+            cursor.style.display = 'none';
+            hoverStartTime = null;
+        }
+    });
+    new Camera(document.getElementById('video-preview'), { onFrame: async () => await hands.send({image: document.getElementById('video-preview')}), width: 640, height: 480 }).start();
+}
+
+function startApp() {
+    appStarted = true;
+    document.getElementById('welcome-modal').style.opacity = '0';
+    setTimeout(() => {
+        document.getElementById('welcome-modal').style.display = 'none';
+        const layer = document.getElementById('ui-layer');
+        layer.style.display = 'block';
+        setTimeout(() => layer.style.opacity = '1', 10);
+        document.getElementById('history-panel').style.display = 'block';
+        setTimeout(() => document.getElementById('history-panel').style.opacity = '1', 10);
+    }, 800);
+
+    ZODIACS.forEach((name) => {
+        const group = new THREE.Group();
+        const count = 380; const posArr = new Float32Array(count*3);
+        for(let j=0; j<count; j++){
+            const r=1.4*(0.8+Math.random()*0.4), a=Math.random()*Math.PI*2;
+            posArr[j*3]=Math.cos(a)*r; posArr[j*3+1]=Math.sin(a)*r; posArr[j*3+2]=(Math.random()-0.5)*0.2;
+        }
+        const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        const mat = new THREE.PointsMaterial({ size: 0.08, color: 0x00f2ff, transparent: true, blending: THREE.AdditiveBlending, opacity: 0.5 });
+        group.add(new THREE.Points(geo, mat));
+        group.userData = { name, mat };
+        scene.add(group); starGroups.push(group);
+    });
+    setTimeout(() => { lock = false; }, 1000);
+}
+
+// 修改：修补逻辑漏洞的 handleAction
+function handleAction() {
+    if (currentCard) {
+        isOpening = true;
+        document.getElementById('card-info-box').classList.remove('show');
+        new TWEEN.Tween(currentCard.scale).to({x:0,y:0,z:0}, 600).onComplete(() => {
+            scene.remove(currentCard); currentCard = null; isFocused = false; isOpening = false;
+            if(currentRound >= 3) showSummary();
+        }).start();
+        return;
+    }
+    if (isOpening || currentRound >= 3) return;
+    
+    if (!isFocused) {
+        // --- 逻辑修补：校验目标星环是否有效 ---
+        if (!starGroups[currentIndex]) return; // 如果已被抽选为空缺，直接返回
+        
+        isFocused = true;
+        new TWEEN.Tween(starGroups[currentIndex].position).to({z:5.5, y:0.5}, 800).start();
+        starGroups.forEach((s,i) => { if(i!==currentIndex && s) new TWEEN.Tween(s.scale).to({x:0,y:0,z:0}, 400).start(); });
+    } else {
+        // --- 逻辑修补：确保选中后操作时对象存在 ---
+        const s = starGroups[currentIndex];
+        if (!s) { // 极特殊情况下如果选中后对象消失，重置状态
+            isFocused = false;
+            animateRingStates(); // 重新显示剩余星环
+            return;
+        }
+        
+        isOpening = true;
+        const r = Math.random() * 100;
+        let type = r > 99 ? 'HIDDEN' : (r > 78 ? 'RARE' : 'NORMAL');
+        new TWEEN.Tween(s.scale).to({x:5,y:5,z:5}, 500).onComplete(() => {
+            scene.remove(s); 
+            // 重要：将已被抽选的位置设为 null
+            starGroups[currentIndex] = null;
+            spawnCard(s.userData.name, type);
+        }).start();
+    }
+}
+
+function spawnCard(name, type) {
+    const loader = new THREE.TextureLoader();
+    const group = new THREE.Group();
+    const config = RARITY_MAP[type];
+    const matArr = [
+        new THREE.MeshStandardMaterial({color: 0x333333}), new THREE.MeshStandardMaterial({color: 0x333333}),
+        new THREE.MeshStandardMaterial({color: 0x333333}), new THREE.MeshStandardMaterial({color: 0x333333}),
+        new THREE.MeshStandardMaterial({map: loader.load(`./images/${name}_星座祝福卡.jpg`)}),
+        new THREE.MeshStandardMaterial({map: loader.load(`./images/盲盒通用卡背.jpg`)})
+    ];
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(3.6, 3.6, 0.1), matArr);
+    group.add(mesh); group.position.set(0, -9, 5.5);
+    group.rotation.y = Math.PI; 
+    scene.add(group); currentCard = group;
+    createBurst(new THREE.Vector3(0, 0, 5.5), config.threeColor);
+    new TWEEN.Tween(group.position).to({y: 1.2}, 1300).easing(TWEEN.Easing.Back.Out).start();
+    new TWEEN.Tween(group.rotation).to({y: Math.PI * 8}, 2000).onComplete(() => { 
+        isOpening = false; 
+        showCardInfo(name, type);
+    }).start();
+    const log = document.getElementById('log-list');
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.innerHTML = `<span>★ ${name}</span><span class="rarity-tag" style="background:${config.color}">${config.label}</span>`;
+    log.prepend(item);
+    totalScore += config.score;
+    document.getElementById('score-val').innerText = totalScore;
+    drawHistory.push({ name, type });
+    currentRound++;
+    document.getElementById('round-count').innerText = `${currentRound} / 3`;
+}
+
+// 辅助函数：重新显示剩余星环（用于异常处理）
+function animateRingStates() {
+    starGroups.forEach((s,i) => { 
+        if(s) new TWEEN.Tween(s.scale).to({x:0.6,y:0.6,z:0.6}, 400).start(); 
+    });
+}
+
+function showCardInfo(name, type) {
+    const config = RARITY_MAP[type];
+    const info = document.getElementById('card-info-box');
+    document.getElementById('info-rarity').innerText = config.label;
+    document.getElementById('info-rarity').style.color = config.color;
+    document.getElementById('info-name').innerText = name;
+    document.getElementById('info-desc').innerText = ZODIAC_DESC[name];
+    info.classList.add('show');
+}
+
+function showSummary() {
+    summaryMode = true;
+    updateLeaderboard(totalScore);
+    const screen = document.getElementById('summary-screen');
+    document.getElementById('ui-layer').style.opacity = '0';
+    document.getElementById('history-panel').style.opacity = '0';
+    setTimeout(() => {
+        document.getElementById('ui-layer').style.display = 'none';
+        document.getElementById('history-panel').style.display = 'none';
+        document.getElementById('final-score').innerText = `TOTAL SCORE: ${totalScore}`;
+        document.getElementById('summary-list').innerHTML = drawHistory.map(h => `
+            <div style="width:130px; height:130px; border-radius:10px; background-image:url('./images/${h.name}_星座祝福卡.jpg'); background-size:cover; border:2.5px solid ${RARITY_MAP[h.type].color};"></div>
+        `).join('');
+        screen.style.display = 'flex';
+        setTimeout(() => screen.style.opacity = '1', 10);
+    }, 1000);
+}
+
+function updateLeaderboard(score) {
+    let ranks = JSON.parse(localStorage.getItem('zodiac_ranks') || '[]');
+    ranks.push(score);
+    ranks.sort((a, b) => b - a);
+    ranks = ranks.slice(0, 5);
+    localStorage.setItem('zodiac_ranks', JSON.stringify(ranks));
+    const list = document.getElementById('rank-list');
+    list.innerHTML = ranks.map((s, i) => `
+        <div class="rank-item ${s === score ? 'rank-highlight' : ''}">
+            <span>NO.${i+1} 星域观测者</span>
+            <span>${s} PTS</span>
+        </div>
+    `).join('');
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    TWEEN.update();
+    if(!isFocused && appStarted && !summaryMode) {
+        scrollOffset += (targetScroll - scrollOffset) * 0.1;
+        currentIndex = Math.round(scrollOffset);
+        starGroups.forEach((s,i) => {
+            if(!s) return;
+            s.position.x = (i - scrollOffset) * 4.5;
+            s.userData.mat.opacity = i === currentIndex ? 0.7 : 0.18;
+            s.scale.setScalar(i === currentIndex ? 1.8 : 0.6);
+        });
+    }
+    renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>

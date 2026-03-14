@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Cyber Parkour - Wide & Short River</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #fff; z-index: 10; pointer-events: none; }
+        #timer { position: absolute; top: 20px; right: 20px; color: #0ff; font-size: 48px; font-weight: 900; text-shadow: 0 0 20px #0ff; }
+        #video-container { position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px; border: 3px solid #f0f; border-radius: 12px; overflow: hidden; transform: scaleX(-1); }
+        #webcam { width: 100%; height: 100%; object-fit: cover; }
+        
+        #cursor {
+            position: fixed; width: 40px; height: 40px;
+            border: 2px solid #0ff; border-radius: 50%;
+            pointer-events: none; z-index: 200;
+            transform: translate(-50%, -50%);
+            display: none; transition: border-color 0.2s, transform 0.1s;
+        }
+        #cursor::after { content: ''; position: absolute; top: 50%; left: -5px; right: -5px; height: 2px; background: #0ff; transform: translateY(-50%); }
+        #cursor::before { content: ''; position: absolute; left: 50%; top: -5px; bottom: -5px; width: 2px; background: #0ff; transform: translateX(-50%); }
+        #cursor.active { border-color: #f0f; transform: translate(-50%, -50%) scale(1.2) rotate(45deg); }
+        #cursor.active::after, #cursor.active::before { background: #f0f; }
+
+        #overlay { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.85); display: flex; flex-direction: column; 
+            justify-content: center; align-items: center; z-index: 100; color: #0ff; text-align: center; 
+            transition: opacity 0.5s ease; opacity: 1;
+        }
+        #overlay.hidden { opacity: 0; pointer-events: none; }
+
+        .rank-list { text-align: left; margin: 20px 0; font-family: monospace; font-size: 18px; color: #fff; width: 100%; }
+        .rank-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #333; padding: 5px 0; }
+        
+        .btn-container { position: relative; margin-top: 30px; }
+        .btn { 
+            padding: 18px 60px; background: transparent; border: 2px solid #f0f; 
+            color: #f0f; font-weight: bold; cursor: pointer; font-size: 24px; 
+            transition: 0.3s; letter-spacing: 2px; position: relative; overflow: hidden;
+        }
+        .hover-progress { position: absolute; bottom: 0; left: 0; height: 4px; background: #f0f; width: 0%; transition: width 0.1s linear; }
+        .btn.hovering { box-shadow: 0 0 30px #f0f; transform: scale(1.05); }
+
+        #screen-warning {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 0, 0, 0); pointer-events: none; z-index: 50;
+            transition: background 0.15s ease; display: none;
+        }
+        #screen-warning.active { display: block; background: rgba(255, 0, 0, 0.35); }
+        
+        .stats-card { background: rgba(0, 255, 255, 0.05); border: 2px solid #0ff; padding: 40px; border-radius: 15px; box-shadow: 0 0 30px rgba(0, 255, 255, 0.2); display: flex; flex-direction: column; align-items: center; min-width: 350px; }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="ui"><div style="font-size: 28px; font-weight: bold; color: #f0f;">SC: <span id="score">0</span></div></div>
+    <div id="timer">60s</div>
+    <div id="video-container"><video id="webcam" autoplay playsinline></video></div>
+    <div id="screen-warning"></div>
+    <div id="cursor"></div>
+
+    <div id="overlay">
+        <div id="content-box" class="stats-card">
+            <h1 id="main-title" style="font-size: 42px; margin: 0; text-shadow: 0 0 15px #0ff;">CYBER PARKOUR</h1>
+            <p id="sub-text" style="color: #fff; letter-spacing: 3px; margin: 20px 0;">HOVER 2S TO START | HIGH SPEED ACTIVE</p>
+            <div class="btn-container">
+                <button id="start-btn" class="btn" style="display:none">
+                    INITIALIZE LINK
+                    <div class="hover-progress"></div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+    let score = 0, isGameOver = true, timeLeft = 60, currentLane = 1;
+    const LANES = [-6, 0, 6], voxelSize = 0.2;
+    let py = 0, vy = 0, walkCycle = 0;
+    
+    // ==========================================
+    // 【快速动作物理参数】
+    // ==========================================
+    const GRAVITY = -0.045;        
+    const JUMP_VELOCITY = 0.52;    
+    // 【修改点：河流物理属性】
+    const RIVER_FULL_WIDTH = 10.0;  // 恢复到最宽（铺满赛道）
+    const RIVER_SHORT_LENGTH = 12.0; // 长度缩短一半以上，玩家可以快速跳过
+    // ==========================================
+
+    let hoverStartTime = null;
+    const HOVER_DURATION = 2000;
+
+    const scene = new THREE.Scene();
+    const loader = new THREE.TextureLoader();
+    loader.load('my_bg.jpg', (t) => { scene.background = t; });
+
+    scene.fog = new THREE.FogExp2(0x000000, 0.015);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const world = new THREE.Group();
+    scene.add(world);
+    const unlitMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+
+    function buildVoxels(voxels) {
+        const geoms = [];
+        voxels.forEach(v => {
+            const box = new THREE.BoxGeometry(v.s||0.5, v.s||0.5, v.s||0.5);
+            box.translate(v.x, v.y, v.z);
+            const c = new THREE.Color(v.c);
+            const colors = new Float32Array(box.attributes.position.count * 3);
+            for(let i=0; i<colors.length; i+=3){ colors[i]=c.r; colors[i+1]=c.g; colors[i+2]=c.b; }
+            box.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geoms.push(box);
+        });
+        return mergeGeometries(geoms);
+    }
+
+    const Assets = {
+        tree: () => {
+            let v = [];
+            for(let i=0; i<8; i++) v.push({x:0, y:i*0.6, z:0, c:0x331a00});
+            for(let x=-1.5; x<=1.5; x+=0.6) for(let y=4; y<7; y+=0.6) for(let z=-1.5; z<=1.5; z+=0.6) v.push({x:x, y:y, z:z, c:0x00ff66});
+            return buildVoxels(v);
+        },
+        bench: () => {
+            let v = [];
+            for(let x=-1.2; x<=1.2; x+=2.4) for(let y=0; y<1.2; y+=0.6) v.push({x:x, y:y, z:0, c:0x444444});
+            for(let x=-1.8; x<=1.8; x+=0.6) v.push({x:x, y:1.2, z:0, c:0xff00ff});
+            return buildVoxels(v);
+        },
+        building: () => {
+            let v = [], h = 20+Math.random()*25, w = 7;
+            let neon = [0x00ffff, 0xff00ff][Math.floor(Math.random()*2)];
+            for(let iy=0; iy<h; iy++) for(let ix=0; ix<w; ix++) for(let iz=0; iz<w; iz++) {
+                if(ix===0||ix===w-1||iz===0||iz===w-1) {
+                    let c = (iy%5===0 && ix%2===0) ? neon : 0x0a0a15;
+                    v.push({x:ix*0.8, y:iy*0.8, z:iz*0.8, c:c});
+                }
+            }
+            return buildVoxels(v);
+        }
+    };
+
+    const segmentLength = 40, totalSegments = 12;
+    const segments = [];
+    function createMegaSegment(zOffset, isRiver = false) {
+        const group = new THREE.Group();
+        group.userData = { isRiver }; 
+        const voxels = [];
+        if(isRiver) {
+            // 【核心修改：河流宽度恢复 RIVER_FULL_WIDTH，河流长度缩减 RIVER_SHORT_LENGTH】
+            for(let x = -RIVER_FULL_WIDTH; x <= RIVER_FULL_WIDTH; x+=0.8) 
+                for(let z = 0; z < RIVER_SHORT_LENGTH; z+=1.5) 
+                    voxels.push({x:x, y:-5, z:-z, s:1.8, c:Math.random()>0.7?0xffffff:0x00ffff});
+            
+            // 填充河流前后的陆地
+            for(let z = RIVER_SHORT_LENGTH; z < segmentLength; z+=1.5)
+                for(let x = -10; x < 10; x++) voxels.push({x:x, y:-2.5, z:-z, s:1.3, c:Math.random()>0.92?0x00ffff:0x0a0a15});
+        } else {
+            for(let x = -10; x < 10; x++) for(let z = 0; z < segmentLength; z+=1.5)
+                voxels.push({x:x, y:-2.5, z:-z, s:1.3, c:Math.random()>0.92?0x00ffff:0x0a0a15});
+        }
+        group.add(new THREE.Mesh(buildVoxels(voxels), unlitMat));
+        if(!isRiver) {
+            for(let i=0; i<5; i++) {
+                const asset = Math.random() < 0.3 ? Assets.tree() : (Math.random() < 0.5 ? Assets.bench() : Assets.building());
+                const m = new THREE.Mesh(asset, unlitMat);
+                m.position.set((Math.random()>0.5?1:-1)*(11+Math.random()*4), -2.5, -Math.random()*segmentLength);
+                group.add(m);
+            }
+        }
+        group.position.z = zOffset; world.add(group); return group;
+    }
+    for(let i=0; i<totalSegments; i++) segments.push(createMegaSegment(-i * segmentLength, i%4===0 && i!==0));
+
+    const rainGroup = new THREE.Group();
+    for(let i=0; i<1000; i++) {
+        const r = new THREE.Mesh(new THREE.BoxGeometry(0.02, 1.5, 0.02), new THREE.MeshBasicMaterial({color:0x00ffff, transparent:true, opacity:0.2}));
+        r.position.set((Math.random()-0.5)*60, Math.random()*50, (Math.random()-0.5)*100);
+        rainGroup.add(r);
+    }
+    scene.add(rainGroup);
+
+    function createHero() {
+        const v = [];
+        const data = ["  GGGG  ", " GGGGGG ", " GGEEGG ", " GGGGGG ", "  XXXX  ", " CCCCCC ", " CCCCCC ", " CCCCCC ", " CCCCCC ", " LL  LL ", " LL  LL ", " LL  LL "];
+        const colors = {'G':0xFFD700, 'E':0x00ffff, 'X':0xffcc99, 'C':0x0066ff, 'L':0xcc00ff};
+        data.forEach((row, y) => { for(let x=0; x<row.length; x++) if(row[x]!==' ') v.push({x:(x-4)*voxelSize, y:(12-y)*voxelSize, z:0, s:voxelSize, c:colors[row[x]]}); });
+        return new THREE.Mesh(buildVoxels(v), unlitMat);
+    }
+    const hero = createHero(); scene.add(hero);
+
+    const obstacles = [];
+    for(let i=0; i<6; i++) {
+        const o = new THREE.Mesh(new THREE.BoxGeometry(3, 4, 3), new THREE.MeshBasicMaterial({color:0xff0055}));
+        o.position.set(LANES[i%3], -0.5, -60 - i*50);
+        world.add(o); obstacles.push(o);
+    }
+
+    const startBtn = document.getElementById('start-btn');
+    const visualCursor = document.getElementById('cursor');
+
+    function checkHoverForBtn(x, y, btnElement, onComplete) {
+        if(isGameOver && btnElement.style.display !== 'none') {
+            const rect = btnElement.getBoundingClientRect();
+            if(x > rect.left && x < rect.right && y > rect.top && y < rect.bottom) {
+                visualCursor.classList.add('active');
+                if(!hoverStartTime) hoverStartTime = Date.now();
+                const elapsed = Date.now() - hoverStartTime;
+                const progress = btnElement.querySelector('.hover-progress');
+                if(progress) progress.style.width = Math.min((elapsed / HOVER_DURATION) * 100, 100) + '%';
+                btnElement.classList.add('hovering');
+                if(elapsed >= HOVER_DURATION) { hoverStartTime = null; onComplete(); }
+            } else {
+                visualCursor.classList.remove('active');
+                hoverStartTime = null;
+                const progress = btnElement.querySelector('.hover-progress');
+                if(progress) progress.style.width = '0%';
+                btnElement.classList.remove('hovering');
+            }
+        }
+    }
+
+    const video = document.getElementById('webcam');
+    const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5 });
+    hands.onResults(res => {
+        if(res.multiHandLandmarks && res.multiHandLandmarks[0]) {
+            const tip = res.multiHandLandmarks[0][8];
+            const flippedX = (1 - tip.x) * window.innerWidth;
+            const screenY = tip.y * window.innerHeight;
+            visualCursor.style.left = flippedX + 'px';
+            visualCursor.style.top = screenY + 'px';
+            const contentBox = document.getElementById('content-box');
+            if(contentBox.querySelector('#start-btn')) {
+                checkHoverForBtn(flippedX, screenY, startBtn, startGame);
+            } else if(contentBox.querySelector('#retry-btn')) {
+                const retryBtn = contentBox.querySelector('#retry-btn');
+                checkHoverForBtn(flippedX, screenY, retryBtn, () => location.reload());
+            }
+            const fx = 1 - tip.x;
+            currentLane = fx < 0.35 ? 0 : (fx > 0.65 ? 2 : 1);
+            if(!isGameOver && py < 0.1 && tip.y < 0.4) vy = JUMP_VELOCITY;
+        }
+    });
+    const cam = new Camera(video, { onFrame: async() => await hands.send({image:video}), width:640, height:480 });
+    cam.start().then(() => { startBtn.style.display='block'; visualCursor.style.display = 'block'; });
+
+    const warningMask = document.getElementById('screen-warning');
+    function animate() {
+        if(isGameOver) return;
+        requestAnimationFrame(animate);
+        const speed = 0.75 + (60-timeLeft)*0.0084;
+        score++; document.getElementById('score').innerText = score;
+
+        let onRiver = false, isNearRiver = false;
+        segments.forEach(s => {
+            s.position.z += speed;
+            if(s.userData.isRiver) {
+                const rZ = s.position.z - hero.position.z;
+                // 检测是否在缩短后的河流纵向范围内
+                if(rZ > -RIVER_SHORT_LENGTH && rZ < 0) isNearRiver = true;
+                if(s.position.z > 0 && s.position.z < RIVER_SHORT_LENGTH) onRiver = true;
+            }
+            if(s.position.z > 50) s.position.z -= totalSegments * segmentLength;
+        });
+
+        warningMask.className = isNearRiver ? 'active' : '';
+        if(onRiver && py < voxelSize) { endGame(false); return; }
+        rainGroup.children.forEach(r => { r.position.y -= 1.0; if(r.position.y < -5) r.position.y = 50; });
+
+        py += vy; vy += GRAVITY;
+        if(py < 0) { py = 0; vy = 0; walkCycle += 0.3; hero.scale.set(1, 1, 1); hero.rotation.z = Math.sin(walkCycle)*0.12; }
+        else { hero.scale.set(1, 1 + vy * 0.3, 1); }
+
+        hero.position.set(hero.position.x + (LANES[currentLane]-hero.position.x)*0.22, py, 0);
+
+        const pBox = new THREE.Box3().setFromObject(hero);
+        obstacles.forEach(o => {
+            o.position.z += speed;
+            if(o.position.z > 20) { o.position.z = -280; o.position.x = LANES[Math.floor(Math.random()*3)]; }
+            if(pBox.intersectsBox(new THREE.Box3().setFromObject(o))) endGame(false);
+        });
+        renderer.render(scene, camera);
+    }
+
+    window.startGame = () => {
+        isGameOver = false; document.getElementById('overlay').classList.add('hidden');
+        visualCursor.style.display = 'none';
+        const timerItv = setInterval(() => {
+            if(isGameOver) { clearInterval(timerItv); return; }
+            timeLeft--; document.getElementById('timer').innerText = timeLeft+"s";
+            if(timeLeft <= 0) { clearInterval(timerItv); endGame(true); }
+        }, 1000);
+        animate();
+    };
+
+    function endGame(win) {
+        isGameOver = true; warningMask.className = '';
+        let history = JSON.parse(localStorage.getItem('ranks_cp_v5') || '[]');
+        history.push(score); history.sort((a,b)=>b-a); history = history.slice(0, 5);
+        localStorage.setItem('ranks_cp_v5', JSON.stringify(history));
+        const overlay = document.getElementById('overlay');
+        const box = document.getElementById('content-box');
+        let rankHTML = history.map((s, i) => `<div class="rank-item"><span>RANK ${i+1}</span><span style="color:${s===score ? '#f0f':'#0ff'}">${s} ${s===score ? '◄':' '}</span></div>`).join('');
+        box.innerHTML = `
+            <h1 style="color:${win?'#0ff':'#f00'}; font-size: 42px; margin-bottom:10px;">${win?'MISSION COMPLETE':'MISSION FAILED'}</h1>
+            <p style="font-size: 24px;">CYBER PARKOUR FINAL SC: <span style="color:#f0f">${score}</span></p>
+            <hr style="border:0; border-top:1px solid rgba(0,255,255,0.2); width: 100%;">
+            <div style="font-size:14px; color:#aaa; margin-top:10px;">HALL OF FAME</div>
+            <div class="rank-list">${rankHTML}</div>
+            <div class="btn-container"><button id="retry-btn" class="btn">REBOOT PROTOCOL<div class="hover-progress"></div></button></div>
+        `;
+        overlay.classList.remove('hidden'); visualCursor.style.display = 'block';
+    }
+
+    camera.position.set(0, 11, 28); camera.lookAt(0, 4, 0);
+    window.addEventListener('resize', () => { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+</script>
+</body>
+</html>

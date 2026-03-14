@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>GAME SERIES</title>
+    <style>
+        :root {
+            --primary: #00f2fe;
+            --exit-color: #ff4757;
+            --glass: rgba(255, 255, 255, 0.08);
+        }
+
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; font-family: "Segoe UI", sans-serif; }
+
+        /* 视差背景 */
+        #parallax-bg {
+            position: absolute; top: -5%; left: -5%; width: 110%; height: 110%;
+            background-image: url('background.jpg'); 
+            background-size: cover; background-position: center;
+            filter: brightness(0.3) contrast(1.1); z-index: 1;
+            transition: transform 0.2s ease-out;
+        }
+
+        /* 粒子层 */
+        #particle-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+
+        /* 游戏容器 (层级设为中等) */
+        #game-frame { 
+            position: absolute; width: 100%; height: 100%; 
+            border: none; display: none; z-index: 50; 
+            background: #000; 
+        }
+
+        /* 底部 EXIT 感应区 (最高层级 Z-INDEX) */
+        #exit-sensor {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            width: 220px; height: 50px;
+            background: rgba(0, 0, 0, 0.7); border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 25px; z-index: 9999; 
+            display: none; align-items: center; justify-content: center;
+            color: white; font-size: 14px; font-weight: bold; letter-spacing: 2px;
+            backdrop-filter: blur(15px); pointer-events: none; overflow: hidden;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #exit-fill-bar {
+            position: absolute; left: 0; top: 0; height: 100%;
+            background: var(--exit-color); opacity: 0.5; width: 0%;
+            transition: width 0.1s; z-index: -1;
+        }
+
+        /* 主大厅 UI */
+        #lobby {
+            position: absolute; width: 100%; height: 100%;
+            display: flex; justify-content: center; align-items: center;
+            gap: 100px; z-index: 60;
+        }
+        .card {
+            width: 300px; height: 420px; 
+            background: var(--glass); backdrop-filter: blur(25px);
+            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 30px;
+            color: white; text-align: center; display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            transition: all 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+        }
+        .card.active { border-color: var(--primary); transform: translateY(-15px); box-shadow: 0 15px 40px rgba(0, 242, 254, 0.2); }
+        
+        .icon-box {
+            width: 80px; height: 80px; margin-bottom: 20px;
+            border: 2px solid var(--primary); border-radius: 20px;
+            display: flex; align-items: center; justify-content: center;
+            transform: rotate(45deg); background: rgba(0, 242, 254, 0.1);
+        }
+        .icon-box div { transform: rotate(-45deg); font-size: 32px; }
+
+        .progress-container { width: 120px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 30px; overflow: hidden; }
+        .progress-bar { width: 0%; height: 100%; background: var(--primary); }
+
+        /* 视觉光标 (仅在大厅显示) */
+        #cursor {
+            position: absolute; width: 30px; height: 30px; 
+            background: radial-gradient(circle, #fff 0%, transparent 80%);
+            border: 1.5px solid #fff; border-radius: 50%;
+            pointer-events: none; z-index: 10000; transform: translate(-50%, -50%);
+            display: none; box-shadow: 0 0 15px #fff;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="parallax-bg"></div>
+    <canvas id="particle-canvas"></canvas>
+    <div id="cursor"></div>
+
+    <div id="exit-sensor">
+        <div id="exit-fill-bar"></div>
+        <span style="z-index: 1;">EXIT GAME</span>
+    </div>
+
+    <iframe id="game-frame" src=""></iframe>
+
+    <div id="lobby">
+        <div id="btn-1" class="card">
+            <div class="icon-box"><div>✨</div></div>
+            <h2 style="margin: 0;">星座盲盒</h2>
+            <p style="opacity: 0.4; font-size: 12px;">ZODIAC BOX</p>
+            <div class="progress-container"><div id="p-bar-1" class="progress-bar"></div></div>
+        </div>
+
+        <div id="btn-2" class="card">
+            <div class="icon-box" style="border-color: #fff;"><div>⚡</div></div>
+            <h2 style="margin: 0;">赛博跑酷</h2>
+            <p style="opacity: 0.4; font-size: 12px;">CYBER RUN</p>
+            <div class="progress-container"><div id="p-bar-2" class="progress-bar"></div></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script>
+        const frame = document.getElementById('game-frame');
+        const lobby = document.getElementById('lobby');
+        const bg = document.getElementById('parallax-bg');
+        const exitSensor = document.getElementById('exit-sensor');
+        const cursor = document.getElementById('cursor');
+        
+        let p1 = 0, p2 = 0, pExit = 0;
+
+        // --- 粒子系统 ---
+        const canvas = document.getElementById('particle-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        function initParticles() {
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            particles = [];
+            for(let i=0; i<80; i++) {
+                particles.push({
+                    x: Math.random() * canvas.width, y: Math.random() * canvas.height,
+                    size: Math.random() * 1.5 + 0.5, speedX: (Math.random() - 0.5) * 0.4,
+                    speedY: (Math.random() - 0.5) * 0.4, opacity: Math.random() * 0.7
+                });
+            }
+        }
+        function drawParticles(offX, offY) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles.forEach(p => {
+                p.x += p.speedX + offX * 0.005; p.y += p.speedY + offY * 0.005;
+                if(p.x > canvas.width) p.x = 0; if(p.x < 0) p.x = canvas.width;
+                if(p.y > canvas.height) p.y = 0; if(p.y < 0) p.y = canvas.height;
+                ctx.globalAlpha = p.opacity; ctx.fillStyle = "white";
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill();
+            });
+            requestAnimationFrame(() => drawParticles(offX, offY));
+        }
+        initParticles(); drawParticles(0, 0);
+
+        // --- 核心切换逻辑 ---
+        function launch(url) {
+            lobby.style.display = 'none';
+            frame.src = url;
+            frame.style.display = 'block';
+            exitSensor.style.display = 'flex';
+            cursor.style.display = 'none'; 
+        }
+
+        function quitGame() {
+            frame.src = "";
+            frame.style.display = 'none';
+            lobby.style.display = 'flex';
+            exitSensor.style.display = 'none';
+            p1 = 0; p2 = 0; pExit = 0;
+            document.querySelectorAll('.progress-bar, #exit-fill-bar').forEach(el => el.style.width = '0%');
+        }
+
+        // --- 手势识别逻辑 ---
+        function onResults(results) {
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                cursor.style.display = 'none';
+                return;
+            }
+
+            const landmarks = results.multiHandLandmarks[0];
+
+            if (frame.style.display === 'block') {
+                // 【游戏中】隐藏光标，启动“全掌多点感应”退出逻辑
+                cursor.style.display = 'none';
+                checkMultiPointExit(landmarks);
+            } else {
+                // 【大厅中】显示光标，执行食指选择逻辑
+                const indexTip = landmarks[8];
+                const x = (1 - indexTip.x) * window.innerWidth;
+                const y = indexTip.y * window.innerHeight;
+
+                cursor.style.display = 'block';
+                cursor.style.left = x + 'px';
+                cursor.style.top = y + 'px';
+                
+                bg.style.transform = `translate(${(indexTip.x-0.5)*50}px, ${(indexTip.y-0.5)*50}px)`;
+                handleLobbySelection(x, y);
+            }
+        }
+
+        // 【关键】全掌多点感应：遍历手部21个点，兼容指尖或手心感应
+        function checkMultiPointExit(landmarks) {
+            const rect = exitSensor.getBoundingClientRect();
+            let handDetectedInRange = false;
+
+            for (let i = 0; i < landmarks.length; i++) {
+                const pt = landmarks[i];
+                const x = (1 - pt.x) * window.innerWidth;
+                const y = pt.y * window.innerHeight;
+
+                if (x > rect.left && x < rect.right && y > rect.top && y < rect.bottom) {
+                    handDetectedInRange = true;
+                    break; 
+                }
+            }
+
+            if (handDetectedInRange) {
+                pExit += 2.8; // 增加步进值，提高响应速度（约2秒触发）
+                document.getElementById('exit-fill-bar').style.width = Math.min(pExit, 100) + '%';
+                if (pExit >= 100) quitGame();
+            } else {
+                pExit = Math.max(0, pExit - 8);
+                document.getElementById('exit-fill-bar').style.width = pExit + '%';
+            }
+        }
+
+        function handleLobbySelection(x, y) {
+            const r1 = document.getElementById('btn-1').getBoundingClientRect();
+            const r2 = document.getElementById('btn-2').getBoundingClientRect();
+
+            if(x > r1.left && x < r1.right && y > r1.top && y < r1.bottom) {
+                document.getElementById('btn-1').classList.add('active');
+                p1 += 2.5; document.getElementById('p-bar-1').style.width = p1 + '%';
+                if(p1 >= 100) launch('game1.html');
+            } else {
+                document.getElementById('btn-1').classList.remove('active');
+                p1 = Math.max(0, p1 - 5); document.getElementById('p-bar-1').style.width = p1 + '%';
+            }
+
+            if(x > r2.left && x < r2.right && y > r2.top && y < r2.bottom) {
+                document.getElementById('btn-2').classList.add('active');
+                p2 += 2.5; document.getElementById('p-bar-2').style.width = p2 + '%';
+                if(p2 >= 100) launch('game2.html');
+            } else {
+                document.getElementById('btn-2').classList.remove('active');
+                p2 = Math.max(0, p2 - 5); document.getElementById('p-bar-2').style.width = p2 + '%';
+            }
+        }
+
+        // --- 初始化 ---
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(onResults);
+
+        const v = document.createElement('video');
+        new Camera(v, { onFrame: async () => { await hands.send({image: v}); }, width: 1280, height: 720 }).start();
+
+        window.addEventListener('resize', initParticles);
+    </script>
+</body>
+</html>
